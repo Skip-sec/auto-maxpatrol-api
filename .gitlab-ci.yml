@@ -1,0 +1,26 @@
+stages:
+  - deploy
+
+deploy_job:
+  stage: deploy
+  # Используем shell раннер, поэтому image не указываем
+  only:
+    - master
+  script:
+    - echo "Начинаем локальный деплой на srv-isd-auto.net.billing.ru..."
+    
+    # 1. Синхронизируем файлы
+    # Используем одну строку для rsync, чтобы избежать ошибок интерпретации переносов в shell
+    - rsync -rlptDvz --delete --no-owner --no-group --chmod=D755,F644 --exclude='.git/' --exclude='.gitlab-ci.yml' --exclude='venv/' --exclude='logs/' --exclude='files/' --exclude='.env' ./ /opt/auto-maxpatrol-api/
+
+    # 2. Обновляем окружение
+    - echo "Обновляем зависимости в /opt/auto-maxpatrol-api/..."
+    - cd /opt/auto-maxpatrol-api/
+    - mkdir -p logs files
+    
+    # Обновление pip и установка зависимостей
+    # Скрипт предполагает, что venv уже создан в этой папке
+    - ./venv/bin/python3 -m pip install --upgrade pip
+    - ./venv/bin/pip install -r requirements.txt
+    
+    - echo "Деплой успешно завершен!"
