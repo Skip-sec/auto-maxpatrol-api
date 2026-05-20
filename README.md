@@ -143,7 +143,7 @@
 ---
 
 ## 5. Инфраструктура и Деплой
-* **Хост:** `srv-isd-auto.net.billing.ru`
+* **Хост:** `Linux тачка`
 * **CI/CD:** GitLab Runner (автодеплой при push в `master`).
 * **Cron:** Запуск ежедневно в 09:00.
 ```bash
