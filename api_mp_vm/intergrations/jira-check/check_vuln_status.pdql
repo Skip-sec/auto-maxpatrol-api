@@ -1,1 +1,0 @@
-select(host.@vulners.status, host.@vulners.id, host.@audittime) | filter(host.@vulners.id in [{ids}])
