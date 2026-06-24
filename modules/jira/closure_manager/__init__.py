@@ -27,7 +27,7 @@ class VulnerabilityClosureManager:
         
         # Словари для накопления отчетов по каждой ISP
         stuck_reports = {}      # User Action > 14 дней
-        escalation_reports = {} # Waiting for support > 60 дней
+        escalation_reports = {} # Waiting for support -> точечные алерты (60, 80, 90 дней)
         action_reports = {}     # Успешные действия (Close/Reject) за сегодня
         admin_alerts = {}       # Предупреждения от Admin
 
@@ -101,10 +101,24 @@ class VulnerabilityClosureManager:
             
             for key, updated_dt in support_tasks.items():
                 days_in_support = (datetime.now() - updated_dt).days
-                if days_in_support >= MAX_SUPPORT_WAIT_DAYS:
-                    logging.warning(f"    [ESCALATE] {key}: Stuck in support.")
-                    if isp not in escalation_reports: escalation_reports[isp] = []
-                    escalation_reports[isp].append(f"* {key} (В поддержке с: {updated_dt.strftime('%Y-%m-%d')}, Дней: {days_in_support})")
+                
+                # Строгое срабатывание триггеров на 60, 80 и 90 дней
+                if days_in_support in:
+                    logging.warning(f"    [ESCALATE] {key}: Stuck in support for {days_in_support} days.")
+                    if isp not in escalation_reports: 
+                        escalation_reports[isp] = []
+                    
+                    # Определение текстовой метки уровня эскалации
+                    if days_in_support == 60:
+                        stage = "⚠️ ПЕРВИЧНАЯ (60 дней)"
+                    elif days_in_support == 80:
+                        stage = "🚨 КРИТИЧЕСКАЯ (80 дней)"
+                    else:
+                        stage = "🔥 ФИНАЛЬНАЯ (90 дней)"
+                        
+                    escalation_reports[isp].append(
+                        f"* {key} [{stage}] (В поддержке с: {updated_dt.strftime('%Y-%m-%d')})"
+                    )
 
         # --- 4. ОТПРАВКА СВОДНЫХ ОТЧЕТОВ ---
         logging.info("Step 4: Posting summary reports to ISP tasks...")
@@ -123,7 +137,8 @@ class VulnerabilityClosureManager:
             self.processor.add_isp_comment(isp_key, alert_msg)
 
         for isp_key, esc_list in escalation_reports.items():
-            esc_msg = "🚨 *Эскалация ИБ!* Задачи находятся в статусе 'Waiting for support' более 60 дней:\n" + "\n".join(esc_list)
-            self.processor.add_isp_comment(isp_key, esc_msg)
+            if esc_list:  # Отправляем комментарий только если сегодня сработали триггеры
+                esc_msg = "🚨 *Эскалация ИБ!* Зафиксированы задачи, требующие немедленного контроля:\n" + "\n".join(esc_list)
+                self.processor.add_isp_comment(isp_key, esc_msg)
             
         logging.info("--- Verification Workflow Finished ---")
