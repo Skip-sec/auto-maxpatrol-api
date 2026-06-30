@@ -111,3 +111,70 @@ class JiraDiscovery:
         except Exception as e:
             logging.error(f"Error checking comments for {sd_key}: {e}")
             return False
+
+    def is_closed_without_ib_answer(self, sd_key, admin_login):
+        """
+        Проверяет, была ли задача принудительно закрыта системой без ответа ИБ.
+        """
+        # Запрашиваем данные по задаче, включая статус и комментарии
+        url = f"{self.sd_url}/rest/api/2/issue/{sd_key}?fields=status,comment"
+        try:
+            resp = requests.get(url, headers=self.sd_headers, verify=False, timeout=10)
+            if resp.status_code != 200:
+                return False
+                
+            issue_data = resp.json()
+            
+            # Проверяем статус задачи (убеждаемся, что она закрыта)
+            status_name = issue_data.get("fields", {}).get("status", {}).get("name", "")
+            if status_name != "Closed":
+                return False
+                
+            # Универсальное извлечение комментариев: проверяем оба возможных пути в JSON
+            comments = []
+            if "fields" in issue_data and "comment" in issue_data["fields"]:
+                comments = issue_data["fields"]["comment"].get("comments", [])
+            else:
+                comments = issue_data.get("comments", [])
+
+            if not comments:
+                logging.info(f"    [CLOSED CHECK] В задаче {sd_key} не найдено комментариев.")
+                return False
+
+            admin_warning_found = False
+            ib_answered_after_warning = False
+            auto_close_triggered = False
+
+            # Перебираем комментарии в хронологическом порядке
+            for comment in comments:
+                author = comment.get('author', {}).get('name', '')
+                body = comment.get('body', '')
+
+                # 1. Поиск предупреждения от ИБ (Администратора)
+                if author == admin_login and "Обращаем внимание" in body:
+                    admin_warning_found = True
+                    ib_answered_after_warning = False  # Ищем ответ строго ПОСЛЕ
+                    auto_close_triggered = False
+                    continue
+
+                if admin_warning_found:
+                    body_lower = body.lower()
+                    # 2. Поиск системного текста автоматического закрытия
+                    if author == admin_login and ("completed automatically" in body_lower or "service regulations" in body_lower):
+                        auto_close_triggered = True
+                        continue
+
+                    # 3. Любой живой комментарий не от Admin и не от бота расценивается как ответ ИБ
+                    if author != admin_login:
+                        ib_answered_after_warning = True
+
+            # Выводим подробный статус разбора в лог, чтобы сразу увидеть причину
+            logging.info(f"    [CLOSED CHECK FOR {sd_key}] Warning: {admin_warning_found}, AutoClose: {auto_close_triggered}, IB Answered: {ib_answered_after_warning}")
+
+            if admin_warning_found and auto_close_triggered and not ib_answered_after_warning:
+                return True
+
+        except Exception as e:
+            logging.error(f"Error executing advanced closed check for {sd_key}: {e}")
+            
+        return False
