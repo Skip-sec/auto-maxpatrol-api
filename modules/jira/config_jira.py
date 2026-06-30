@@ -33,7 +33,9 @@ FIELD_MAP = {
 SERVICE_DESK_ID = "4"
 REQUEST_TYPE_ID = "500"
 APP_ID_JIRA_SD = "301eba08-3835-33fd-927b-f4932f6b2794"
-PARENT_LINK_KEY = "ISP-***"
+PARENT_LINK_KEY = "ISP-856"
+# Поле Affected CI / Оборудование из Jira Service Desk
+CI_CUSTOM_FIELD_ID = "customfield_11807"
 
 
 # Статус, который мы ищем для проверки
@@ -48,3 +50,21 @@ TRANSITION_ID_PENDING = "51"  # Return to work -> статус Waiting for suppo
 
 MAX_SUPPORT_WAIT_DAYS = 60  # Порог для эскалации задач Waiting for support
 STATUS_WAITING_SUPPORT = "Waiting for support"
+
+CSV_DIR = "/opt/auto-maxpatrol-api/files/jira-pdql/CSVFiles"
+
+ADMIN_LOGIN = "Admin"
+
+# --- 60, 80, 90 дней (Эскалация) ---
+# Целевые дни для отправки точечных отчетов и навешивания тегов просрочки
+ESCALATION_TARGET_DAYS = [60, 80, 90]
+
+# Имена тегов для Kanban-доски Jira Nexign
+TAG_WARN_7_DAYS = "ИБ_7_дней"
+TAG_PROGRESS_60D = "60d_without_progress"
+TAG_PROGRESS_80D = "80d_without_progress"
+TAG_PROGRESS_90D = "90d_without_progress"
+
+# Список всех возможных меток обратного отсчета для ИБ
+TAGS_IB_COUNTDOWN = [f"ИБ_{i}_дней" for i in range(1, 8)]  # Создаст список ['ИБ_1_дней', ..., 'ИБ_7_дней']
+TAG_CLOSED_NO_ANSWER = "SD_closed_without_answer"
