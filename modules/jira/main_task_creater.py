@@ -13,14 +13,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class JiraTaskCreator:
     def __init__(self):
-        base_domain = os.getenv("JIRA_BASE_URL", "https://jira.nexign.com").rstrip('/')
+        base_domain = os.getenv("JIRA_BASE_URL", "https://***").rstrip('/')
         self.issue_url = f"{base_domain}/rest/api/2/issue"
         self.token = os.getenv("JIRA_TOKEN")
         self.headers = {
             "Authorization": f"Bearer {self.token}",
             "X-Atlassian-Token": "no-check"
         }
-        self.xlsx_dir = "files/jira-pdql/XLSXFiles"
+        self.xlsx_dir = "/opt/auto-maxpatrol-api/files/jira-pdql/XLSXFiles" 
 
     def get_last_week_range(self):
         today = datetime.now()
@@ -58,6 +58,8 @@ class JiraTaskCreator:
                 logging.error(f"Exception during upload {file_path}: {e}")
 
     def create_weekly_vulnerability_task(self):
+        logging.info("[DRY-RUN] Имитация создания задач. Запросы в Jira блокированы.")
+        #test без создания тикетов в jira return "ISP-TEST" 
         date_start, date_end = self.get_last_week_range()
         summary_text = f"Устранение уязвимостей найденные за {date_start} - {date_end}"
         

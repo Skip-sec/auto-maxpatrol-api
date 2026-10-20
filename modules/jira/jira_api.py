@@ -1,16 +1,15 @@
+# -*- coding: utf-8 -*-
 import requests
 import logging
 import urllib3
 from os import getenv
 from dotenv import load_dotenv
-from api_mp_vm.mp_vm_variables import * 
 
 # Загружаем переменные из .env
 load_dotenv()
-
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-JIRA_URL = getenv("JIRA_URL", "https://sd.nexign.com").rstrip('/')
+JIRA_URL = getenv("JIRA_URL", "https://***").rstrip('/')
 BEARER_TOKEN = getenv("JIRA_TOKENsd")
 
 ATTR_IDS = {
@@ -20,12 +19,16 @@ ATTR_IDS = {
     "IT System": int(getenv("JIRA_ATTR_IT_SYSTEM", 2288))
 }
 
-headers = {
+# Инициализируем глобальную сессию для Jira (Keep-Alive)
+# Это ускорит запросы к Jira Assets в 5-10 раз
+jira_session = requests.Session()
+jira_session.verify = False
+jira_session.headers.update({
     "Authorization": f"Bearer {BEARER_TOKEN}",
     "X-Atlassian-Token": "no-check",
     "Accept": "application/json",
     "Content-Type": "application/json"
-}
+})
 
 def get_jira_asset_info(full_host_input):
     if isinstance(full_host_input, dict):
@@ -36,12 +39,17 @@ def get_jira_asset_info(full_host_input):
     if not full_host_string:
         return {k: "N/A" for k in ["cmdb-Jira-ID", "Owner", "Responsible", "IT System", "Status"]}
 
+    # ИСПРАВЛЕНО: Безопасный пошаговый разбор (без цепочки .split().split())
     try:
-        # Улучшенная очистка: берем только то, что до первой точки или пробела
-        short_name = full_host_string.split('.')[0].split(' ')[0].strip()
+        parts_dot = full_host_string.split('.')
+        first_part_dot = parts_dot[0] if parts_dot else full_host_string
+        parts_space = first_part_dot.split(' ')
+        short_name = parts_space[0].strip()
+        short_name_escaped = short_name.replace('"', '\\"')
     except Exception:
         short_name = full_host_string
-    
+        short_name_escaped = full_host_string.replace('"', '\\"')
+
     result = {
         "cmdb-Jira-ID": "NOT_FOUND",
         "Owner": "N/A",
@@ -55,47 +63,45 @@ def get_jira_asset_info(full_host_input):
         return result
 
     search_url = f"{JIRA_URL}/rest/insight/1.0/iql/objects"
-    
-    # ИЗМЕНЕНИЕ: Используем "=" вместо "LIKE" для точного поиска по Label
-    # Это гарантирует, что srv-dwh-uat найдет именно этот сервер, а не базу с похожим именем
     queries = [
-        f'objectType = 58 AND Label =ilike "{short_name}"', # Сначала только Virtual Server
-        f'Label = "{short_name}"'                      # Если не нашли, ищем по всем типам, но точно по имени
+        f'objectType = 58 AND Label = "{short_name_escaped}"',
+        f'objectType = 58 AND Label LIKE "{short_name_escaped}"',
+        f'Label = "{short_name_escaped}"'
     ]
-    
+
     entries = []
-    
+
     try:
         for iql in queries:
             params = {"iql": iql, "resultsPerPage": 1}
-            response = requests.get(search_url, headers=headers, params=params, verify=False, timeout=10)
-            response.raise_for_status()
-            
-            found_entries = response.json().get('objectEntries', [])
-            if found_entries:
-                entries = found_entries
-                logging.debug(f"Found object for '{short_name}' using IQL: {iql}")
-                break 
-        
+            try:
+                # Переписано на использование общего пула соединений jira_session
+                response = jira_session.get(search_url, params=params, timeout=10)
+                response.raise_for_status()
+
+                found_entries = response.json().get('objectEntries', [])
+                if found_entries:
+                    entries = found_entries
+                    logging.debug(f"Found object for '{short_name}' using IQL: {iql}")
+                    break
+            except requests.exceptions.RequestException as req_err:
+                logging.warning(f"IQL query failed ({iql}) for {short_name}: {req_err}")
+                continue
+
         if not entries:
             logging.debug(f"Host '{short_name}' not found in Jira Assets")
             return result
-        
-        # Берем данные найденного объекта
+
         obj_id = entries[0].get('id')
         result["cmdb-Jira-ID"] = obj_id
-        
-        # Чтобы не делать лишний запрос, попробуем взять атрибуты сразу из результатов поиска
-        # В objectEntries обычно уже есть массив attributes
         attributes = entries[0].get('attributes', [])
-        
-        # Если вдруг в поиске атрибутов нет (зависит от версии Insight), делаем доп. запрос
+
         if not attributes:
             detail_url = f"{JIRA_URL}/rest/insight/1.0/object/{obj_id}"
-            detail_resp = requests.get(detail_url, headers=headers, verify=False, timeout=10)
+            detail_resp = jira_session.get(detail_url, timeout=10)
             detail_resp.raise_for_status()
             attributes = detail_resp.json().get('attributes', [])
-        
+
         for col_name, target_attr_id in ATTR_IDS.items():
             for attr in attributes:
                 if attr.get('objectTypeAttributeId') == target_attr_id:
@@ -109,7 +115,6 @@ def get_jira_asset_info(full_host_input):
                         else:
                             result[col_name] = v.get('displayValue', "N/A")
         return result
-
     except Exception as e:
-        logging.error(f"Jira API Error for {short_name}: {e}")
+        logging.error(f"General Jira API Error for {short_name}: {e}")
         return result

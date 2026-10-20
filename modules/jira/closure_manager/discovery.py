@@ -1,180 +1,170 @@
+# -*- coding: utf-8 -*-
 import requests
 import logging
 from datetime import datetime
 from modules.jira.config_jira import (
-    PARENT_LINK_KEY, 
-    STATUS_TO_VERIFY, 
-    STATUS_WAITING_SUPPORT, 
+    PARENT_LINK_KEY,
+    STATUS_TO_VERIFY,
+    STATUS_WAITING_SUPPORT,
     APP_ID_JIRA_SD
 )
+
+logger = logging.getLogger(__name__)
 
 class JiraDiscovery:
     def __init__(self, jira_url, jira_headers, sd_url, sd_headers):
         self.jira_url = jira_url.rstrip('/')
         self.sd_url = sd_url.rstrip('/')
-        self.jira_headers = jira_headers
-        self.sd_headers = sd_headers
+        
+        # Настраиваем переиспользование сессий для ускорения Remote Links и комментов
+        self.jira_session = requests.Session()
+        self.jira_session.verify = False
+        self.jira_session.headers.update(jira_headers)
+        
+        self.sd_session = requests.Session()
+        self.sd_session.verify = False
+        self.sd_session.headers.update(sd_headers)
 
     def get_weekly_isp_tasks(self):
         """Получает список еженедельных задач (ISP-XXX), привязанных к главной (ISP-856)."""
         url = f"{self.jira_url}/rest/api/2/issue/{PARENT_LINK_KEY}"
         try:
-            resp = requests.get(url, headers=self.jira_headers, verify=False, timeout=20)
+            resp = self.jira_session.get(url, timeout=20)
             resp.raise_for_status()
             links = resp.json().get('fields', {}).get('issuelinks', [])
             return [l.get('inwardIssue', {}).get('key') for l in links 
                     if l.get('inwardIssue', {}).get('key', '').startswith('ISP-')]
         except Exception as e:
-            logging.error(f"Discovery Error (ISP lookup): {e}")
+            logger.error(f"Discovery Error (ISP lookup): {e}")
             return []
 
     def get_sd_tasks_from_isp(self, isp_key):
-        """Находит ключи задач Service Desk (SD-XXX) через Remote Links в еженедельной задаче."""
+        """Находит ключи задач Service Desk (SD-XXX) через Remote Links."""
         url = f"{self.jira_url}/rest/api/2/issue/{isp_key}/remotelink"
         try:
-            resp = requests.get(url, headers=self.jira_headers, verify=False, timeout=15)
+            resp = self.jira_session.get(url, timeout=15)
             resp.raise_for_status()
             return [l.get('object', {}).get('title') for l in resp.json() 
-                    if APP_ID_JIRA_SD in l.get('globalId', '') and l.get('object', {}).get('title', '').startswith('SD-')]
+                    if APP_ID_JIRA_SD in l.get('globalId', '') and 
+                    l.get('object', {}).get('title', '').startswith('SD-')]
         except Exception as e:
-            logging.error(f"Discovery Error (SD lookup for {isp_key}): {e}")
+            logger.error(f"Discovery Error (SD lookup for {isp_key}): {e}")
+            return []
+
+    def _fetch_tasks_batch_via_jql(self, sd_tasks: list, target_statuses: list) -> list:
+        """
+        ВНУТРЕННИЙ МЕТОД ОПТИМИЗАЦИИ:
+        Выполняет ОДИН агрегированный JQL-запрос для пакета задач вместо сотен циклов.
+        """
+        if not sd_tasks:
+            return []
+            
+        unique_keys = list(set(sd_tasks))
+        # Формируем JQL: key IN ("SD-1", "SD-2") AND status IN ("User action", "Pending")
+        keys_str = ", ".join(f'"{k}"' for k in unique_keys)
+        statuses_str = ", ".join(f'"{s}"' for s in target_statuses)
+        jql = f"key IN ({keys_str}) AND status IN ({statuses_str})"
+        
+        search_url = f"{self.sd_url}/rest/api/2/search"
+        payload = {
+            "jql": jql,
+            "maxResults": len(unique_keys),
+            "fields": ["status", "updated"]
+        }
+        
+        try:
+            # Отправляем POST-запрос в поисковое API Jira
+            resp = self.sd_session.post(search_url, json=payload, timeout=30)
+            resp.raise_for_status()
+            return resp.json().get("issues", [])
+        except Exception as e:
+            logger.error(f"Failed to execute batch JQL discovery search: {e}")
             return []
 
     def filter_ready_tasks(self, sd_tasks):
-        """Фильтрует задачи, оставляя только те, что в статусе 'User Action'."""
+        """Оптимизированный поиск задач в статусе 'User Action' через 1 JQL-запрос."""
         ready_info = {}
-        for key in list(set(sd_tasks)):
-            url = f"{self.sd_url}/rest/api/2/issue/{key}?fields=status,updated"
-            try:
-                resp = requests.get(url, headers=self.sd_headers, verify=False, timeout=15)
-                resp.raise_for_status()
-                fields = resp.json().get('fields', {})
-                status_name = fields.get('status', {}).get('name', '')
-                updated_str = fields.get('updated')
-                
-                if status_name.lower() == STATUS_TO_VERIFY.lower() and updated_str:
-                    updated_dt = datetime.strptime(updated_str[:19], '%Y-%m-%dT%H:%M:%S')
-                    ready_info[key] = updated_dt
-            except Exception as e:
-                logging.error(f"Status check error for {key}: {e}")
+        issues = self._fetch_tasks_batch_via_jql(sd_tasks, [STATUS_TO_VERIFY])
+        
+        for issue in issues:
+            key = issue.get("key")
+            updated_str = issue.get("fields", {}).get("updated")
+            if updated_str and key:
+                ready_info[key] = datetime.strptime(updated_str[:19], '%Y-%m-%dT%H:%M:%S')
         return ready_info
 
     def filter_support_tasks(self, sd_tasks):
-        """
-        Находит задачи в статусе 'Waiting for support' для последующей проверки
-        на предмет превышения лимита в 60 дней.
-        """
+        """Оптимизированный поиск задач в статусе 'Waiting for support' через 1 JQL-запрос."""
         support_info = {}
-        for key in list(set(sd_tasks)):
-            url = f"{self.sd_url}/rest/api/2/issue/{key}?fields=status,updated"
-            try:
-                resp = requests.get(url, headers=self.sd_headers, verify=False, timeout=15)
-                resp.raise_for_status()
-                fields = resp.json().get('fields', {})
-                status_name = fields.get('status', {}).get('name', '')
-                updated_str = fields.get('updated')
-                
-                if status_name.lower() == STATUS_WAITING_SUPPORT.lower() and updated_str:
-                    updated_dt = datetime.strptime(updated_str[:19], '%Y-%m-%dT%H:%M:%S')
-                    support_info[key] = updated_dt
-            except Exception as e:
-                logging.error(f"Support status check error for {key}: {e}")
+        issues = self._fetch_tasks_batch_via_jql(sd_tasks, [STATUS_WAITING_SUPPORT])
+        
+        for issue in issues:
+            key = issue.get("key")
+            updated_str = issue.get("fields", {}).get("updated")
+            if updated_str and key:
+                support_info[key] = datetime.strptime(updated_str[:19], '%Y-%m-%dT%H:%M:%S')
         return support_info
 
+    def get_biweekly_support_tasks(self, sd_tasks):
+        """Оптимизированный воскресный сбор задач в статусах Support или Pending через 1 JQL-запрос."""
+        issues = self._fetch_tasks_batch_via_jql(sd_tasks, [STATUS_WAITING_SUPPORT, "Pending"])
+        return [issue.get("key") for issue in issues if issue.get("key")]
+
     def check_admin_warning(self, sd_key, admin_login):
-        """
-        Проверяет, является ли последний комментарий в задаче 
-        предупреждением от администратора о закрытии.
-        """
-        # Запрашиваем только 1 последний комментарий, отсортированный по дате создания (новые сверху)
+        """Проверяет, является ли последний комментарий в задаче предупреждением от администратора."""
         url = f"{self.sd_url}/rest/api/2/issue/{sd_key}/comment?orderBy=-created&maxResults=1"
         warning_text = "Обращаем внимание, что в случае, если ответ от Вас не поступит в течение 7 рабочих дней, то обращение будет закрыто."
-        
         try:
-            resp = requests.get(url, headers=self.sd_headers, verify=False, timeout=10)
+            resp = self.sd_session.get(url, timeout=10)
             resp.raise_for_status()
             comments = resp.json().get('comments', [])
-            
             if not comments:
                 return False
-                
             last_comment = comments[0]
-            # Получаем логин автора (name) или его отображаемое имя (displayName)
             author = last_comment.get('author', {}).get('name', '')
             body = last_comment.get('body', '')
-            
-            # Сравниваем автора и ищем вхождение текста предупреждения
-            if author == admin_login and warning_text in body:
-                return True
-                
-            return False
+            return author == admin_login and warning_text in body
         except Exception as e:
-            logging.error(f"Error checking comments for {sd_key}: {e}")
+            logger.error(f"Error checking comments for {sd_key}: {e}")
             return False
 
     def is_closed_without_ib_answer(self, sd_key, admin_login):
-        """
-        Проверяет, была ли задача принудительно закрыта системой без ответа ИБ.
-        """
-        # Запрашиваем данные по задаче, включая статус и комментарии
+        """Проверяет, была ли задача принудительно закрыта системой без ответа ИБ."""
         url = f"{self.sd_url}/rest/api/2/issue/{sd_key}?fields=status,comment"
         try:
-            resp = requests.get(url, headers=self.sd_headers, verify=False, timeout=10)
+            resp = self.sd_session.get(url, timeout=10)
             if resp.status_code != 200:
                 return False
-                
             issue_data = resp.json()
-            
-            # Проверяем статус задачи (убеждаемся, что она закрыта)
             status_name = issue_data.get("fields", {}).get("status", {}).get("name", "")
             if status_name != "Closed":
                 return False
                 
-            # Универсальное извлечение комментариев: проверяем оба возможных пути в JSON
-            comments = []
-            if "fields" in issue_data and "comment" in issue_data["fields"]:
-                comments = issue_data["fields"]["comment"].get("comments", [])
-            else:
-                comments = issue_data.get("comments", [])
-
+            comments = issue_data.get("fields", {}).get("comment", {}).get("comments", [])
             if not comments:
-                logging.info(f"    [CLOSED CHECK] В задаче {sd_key} не найдено комментариев.")
                 return False
-
+                
             admin_warning_found = False
             ib_answered_after_warning = False
             auto_close_triggered = False
-
-            # Перебираем комментарии в хронологическом порядке
+            
             for comment in comments:
                 author = comment.get('author', {}).get('name', '')
                 body = comment.get('body', '')
-
-                # 1. Поиск предупреждения от ИБ (Администратора)
                 if author == admin_login and "Обращаем внимание" in body:
                     admin_warning_found = True
-                    ib_answered_after_warning = False  # Ищем ответ строго ПОСЛЕ
+                    ib_answered_after_warning = False
                     auto_close_triggered = False
                     continue
-
                 if admin_warning_found:
                     body_lower = body.lower()
-                    # 2. Поиск системного текста автоматического закрытия
                     if author == admin_login and ("completed automatically" in body_lower or "service regulations" in body_lower):
                         auto_close_triggered = True
                         continue
-
-                    # 3. Любой живой комментарий не от Admin и не от бота расценивается как ответ ИБ
                     if author != admin_login:
                         ib_answered_after_warning = True
-
-            # Выводим подробный статус разбора в лог, чтобы сразу увидеть причину
-            logging.info(f"    [CLOSED CHECK FOR {sd_key}] Warning: {admin_warning_found}, AutoClose: {auto_close_triggered}, IB Answered: {ib_answered_after_warning}")
-
-            if admin_warning_found and auto_close_triggered and not ib_answered_after_warning:
-                return True
-
+                        
+            return admin_warning_found and auto_close_triggered and not ib_answered_after_warning
         except Exception as e:
-            logging.error(f"Error executing advanced closed check for {sd_key}: {e}")
-            
-        return False
+            logger.error(f"Error executing advanced closed check for {sd_key}: {e}")
+            return False

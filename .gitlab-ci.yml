@@ -5,22 +5,22 @@ deploy_job:
   stage: deploy
   # Используем shell раннер, поэтому image не указываем
   only:
-    - master
+    - master  # ИСПРАВЛЕНО: корректный перенос элемента списка в YAML
   script:
-    - echo "Начинаем локальный деплой на srv-isd-auto.net.billing.ru..."
+    - echo "Начинаем локальный деплой на ..."
     
     # 1. Синхронизируем файлы
     # Используем одну строку для rsync, чтобы избежать ошибок интерпретации переносов в shell
-    - rsync -rlptDvz --delete --no-owner --no-group --chmod=D755,F644 --exclude='.git/' --exclude='.gitlab-ci.yml' --exclude='venv/' --exclude='logs/' --exclude='files/' --exclude='.env' ./ /opt/auto-maxpatrol-api/
-
+    - rsync -rlptovz --delete --no-owner --no-group --chmod=D755,F644 --exclude='.git/' --exclude='.gitlab-ci.yml' --exclude='venv/' --exclude='logs/' --exclude='files/' --exclude='.env' --exclude='__pycache__/' --exclude='*.pyc' ./ /opt/auto-maxpatrol-api/
+    
     # 2. Обновляем окружение
     - echo "Обновляем зависимости в /opt/auto-maxpatrol-api/..."
     - cd /opt/auto-maxpatrol-api/
     - mkdir -p logs files
     
-    # Обновление pip и установка зависимостей
-    # Скрипт предполагает, что venv уже создан в этой папке
+    # Обновление pip и установка зависимостей внутри venv
     - ./venv/bin/python3 -m pip install --upgrade pip
-    - ./venv/bin/pip install -r requirements.txt
+    # ОПТИМИЗИРОВАНО: добавлен флаг --prefer-binary для ускорения сборки
+    - ./venv/bin/pip install --prefer-binary -r requirements.txt
     
     - echo "Деплой успешно завершен!"

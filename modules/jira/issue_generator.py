@@ -6,21 +6,22 @@ from os import getenv
 import time
 from dotenv import load_dotenv
 import requests
+import urllib3
 
-# Импорт конфигурационных параметров
-from modules.jira.config_jira import FIELD_MAP, SERVICE_DESK_ID, REQUEST_TYPE_ID
+from modules.jira.config_jira import FIELD_MAP, SERVICE_DESK_ID, REQUEST_TYPE_ID, CSV_DIR
 from modules.jira.csv_manager import save_vulnerability_csv
 from modules.jira.sd_utils import attach_file_to_sd, link_mirror_issues, assign_issue
 
 load_dotenv()
 
 # --- КОНФИГУРАЦИЯ ---
-SD_URL = getenv("JIRA_URL", "https://sd.nexign.com").rstrip('/')
+SD_URL = getenv("JIRA_URL", "https://***").rstrip('/')
 SD_TOKEN = getenv("JIRA_TOKENsd")
-JIRA_URL = getenv("JIRA_BASE_URL", "https://jira.nexign.com").rstrip('/')
+JIRA_URL = getenv("JIRA_BASE_URL", "https://***").rstrip('/')
 JIRA_TOKEN = getenv("JIRA_TOKEN")
 VULN_CONTACTS = getenv("VULN_CONTACTS", "Security Team")
-JSON_DIR = "files/jira-pdql/JSONFiles/"
+
+JSON_DIR = "/opt/auto-maxpatrol-api/files/jira-pdql/JSONFiles/"
 
 SD_HEADERS = {"Authorization": f"Bearer {SD_TOKEN}", "Content-Type": "application/json", "X-Atlassian-Token": "no-check"}
 JIRA_HEADERS = {"Authorization": f"Bearer {JIRA_TOKEN}", "Content-Type": "application/json", "X-Atlassian-Token": "no-check"}
@@ -92,14 +93,13 @@ class VulnerabilityIssueManager:
                 # --- ЛОГИКА СОВМЕСТИМОСТИ №2: Сбор данных по win схеме ---
                 cve_val = r.get("host.@NodeVulners.CVEs")
                 patch_val = r.get("host.@nodevulners.Patch")
-                
+
                 if cve_val and cve_val != "N/A":
                     # Если у уязвимости есть патч, склеиваем их в одну красивую запись
                     if patch_val and patch_val != "N/A":
                         vuln_entry = f"{cve_val} ({patch_val})"
                     else:
                         vuln_entry = str(cve_val)
-                    
                     host_table_map[host_val]["vulns"].add(vuln_entry)
 
             # --- ОТРИСОВКА WIKI-ТАБЛИЦЫ JIRA (3 колонки) ---
@@ -109,7 +109,7 @@ class VulnerabilityIssueManager:
                 for host, info in host_table_map.items():
                     # Объединяем названия найденных уязвимостей через тег переноса строки Jira \\
                     vulns = info["vulns"]
-                    vuln_string = " \\\\ ".join(sorted(vulns)) if vulns else "См. вложенные файлы"
+                    vuln_string = " \\\\ ".join(sorted(list(vulns))) if vulns else "См. вложенные файлы"
                     it_system = info["it_system"]
                     
                     table_markup += f"| {host} | {it_system} | {vuln_string} |\n"
@@ -123,13 +123,22 @@ class VulnerabilityIssueManager:
                     f"{table_markup}\n"
                     f"Детали во вложениях. Контакты: {VULN_CONTACTS}.")
 
-            # Создаем временные файлы отчетов CSV
+            # ИСПРАВЛЕНО: Передаем чистые префиксы. Логика путей ушла внутрь csv_manager
             files = []
             f_os = save_vulnerability_csv(oc_data, "VULN_OS", owner, today_str)
             f_po = save_vulnerability_csv(po_data, "VULN_SOFT", owner, today_str)
             if f_os: files.append(f_os)
             if f_po: files.append(f_po)
 
+            # ИЗМЕНЕНИЕ: Закомментирована отправка Insight КЕ до настройки экранов в Jira Service Desk
+            # ci_object_ids = []
+            # for r in records:
+            #     ci_id = r.get("cmdb-Jira-ID")
+            #     if ci_id and str(ci_id).isdigit():
+            #         ci_object_ids.append({"id": int(ci_id)})
+            # unique_ci_objects = [dict(t) for t in {tuple(d.items()) for d in ci_object_ids}]
+
+            # ИЗМЕНЕНИЕ: Из payload убрано свойство CI_CUSTOM_FIELD_ID, вызывавшее ошибку 400
             payload = {
                 "requestFieldValues": {
                     "summary": f"Устранение уязвимостей: {owner} за {mon}-{sun}",
@@ -140,7 +149,8 @@ class VulnerabilityIssueManager:
             }
 
             try:
-                logging.info(f"Creating task for {owner}...")
+                logging.info(f"Creating task for {owner} in Service Desk...")
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 resp = requests.post(self.sd_api_url, json=payload, headers=SD_HEADERS, verify=False, timeout=30)
                 
                 if resp.status_code == 201:
@@ -150,7 +160,8 @@ class VulnerabilityIssueManager:
 
                     # Отправка вложений в SD
                     for f_path in files:
-                        attach_file_to_sd(new_key, f_path, SD_URL, SD_TOKEN)
+                        if os.path.exists(f_path):
+                            attach_file_to_sd(new_key, f_path, SD_URL, SD_TOKEN)
                     
                     # Назначение задачи на группу
                     assign_issue(new_key, "ITD_Service_Group", SD_URL, SD_HEADERS)
@@ -166,5 +177,7 @@ class VulnerabilityIssueManager:
             except Exception as e:
                 logging.error(f"Process error for {owner}: {e}")
             finally:
+                # Безопасное удаление временных файлов (проверяем, что они существуют)
                 for f in files:
-                    if os.path.exists(f): os.remove(f)
+                    if f and os.path.exists(f): 
+                        os.remove(f)

@@ -6,7 +6,6 @@ FIELD_MAP = {
     "IT System": "ИТ Система",
     "Owner": "Владелец (Owner)",
     "Responsible": "Ответственный",
-    
     "host.@NodeVulners.CVEs": "Список CVE",
     "Host.@NodeVulners.CVSS3Score": "CVSS (ОС)",
     "Host.@NodeVulners": "Уязвимость ОС",
@@ -15,7 +14,6 @@ FIELD_MAP = {
     "Host.@NodeVulners.HowToFix": "Решение (ОС)",
     "Host.@NodeVulners.Id": "ID (ОС)",
     "host.@nodevulners.Patch": "Патч/KB",
-
     "SoftwareName": "Программное обеспечение",
     "SoftwareVersion": "Версия ПО",
     "SoftwarePath": "Путь к ПО",
@@ -25,41 +23,47 @@ FIELD_MAP = {
     "Host.Softs.@Vulners.Status": "Статус (ПО)",
     "Host.Softs.@Vulners.DiscoveryTime": "Обнаружено (ПО)",
     "Host.Softs.@Vulners.Id": "ID уязвимости (ПО)",
-
     "cmdb-Jira-ID": "ID в CMDB",
     "Status": "Статус хоста"
 }
 
 SERVICE_DESK_ID = "4"
 REQUEST_TYPE_ID = "500"
-APP_ID_JIRA_SD = "301eba08-3835-33fd-927b-f4932f6b2794"
-PARENT_LINK_KEY = "ISP-856"
+APP_ID_JIRA_SD = "**"
+PARENT_LINK_KEY = "***"
+
 # Поле Affected CI / Оборудование из Jira Service Desk
 CI_CUSTOM_FIELD_ID = "customfield_11807"
 
+# Статусы для проверки
+STATUS_TO_VERIFY = "User action"
+STATUS_WAITING_SUPPORT = "Waiting for support"
+STATUS_USER_ACTION = "User action"
+STATUS_PENDING = "Pending"
 
-# Статус, который мы ищем для проверки
-STATUS_TO_VERIFY = "User action" 
 # Количество дней, которое задача должна провисеть в статусе перед проверкой
-VERIFY_AFTER_DAYS = 7 
+VERIFY_AFTER_DAYS = 7
 MAX_WAIT_DAYS = 14
+BIWEEKLY_CHECK_INTERVAL_DAYS = 14  # Интервал проверки задач Waiting for support
 
-#работы со статусами SD задач
-TRANSITION_ID_CLOSE = "61"    # Accept -> статус Closed
+# Работы со статусами SD задач
+TRANSITION_ID_CLOSE = "61"  # Accept -> статус Closed
 TRANSITION_ID_PENDING = "51"  # Return to work -> статус Waiting for support
 
+# Новые переходы для автоматического закрытия цепочкой из Waiting for support
+TRANSITION_ID_SUPPORT_TO_USER_ACTION = "41"  # Кнопка "User action"
+TRANSITION_ID_USER_ACTION_TO_CLOSED = "61"   # Кнопка "Accept"
+
 MAX_SUPPORT_WAIT_DAYS = 60  # Порог для эскалации задач Waiting for support
-STATUS_WAITING_SUPPORT = "Waiting for support"
 
 CSV_DIR = "/opt/auto-maxpatrol-api/files/jira-pdql/CSVFiles"
-
 ADMIN_LOGIN = "Admin"
 
 # --- 60, 80, 90 дней (Эскалация) ---
 # Целевые дни для отправки точечных отчетов и навешивания тегов просрочки
 ESCALATION_TARGET_DAYS = [60, 80, 90]
 
-# Имена тегов для Kanban-доски Jira Nexign
+# Имена тегов для Kanban-доски 
 TAG_WARN_7_DAYS = "ИБ_7_дней"
 TAG_PROGRESS_60D = "60d_without_progress"
 TAG_PROGRESS_80D = "80d_without_progress"
